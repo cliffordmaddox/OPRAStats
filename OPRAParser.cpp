@@ -8,17 +8,21 @@
 
 using namespace std;
 
-class PCAPFileHeader // 24 Bytes
+char scratchPad[200];
+char buffer[100];
+
+string startTime;
+string beginTime;
+
+class PCAPFileHeader
 {
    public:
-   unsigned int   magicNumber_;
-   unsigned short majorVersion_;
-   unsigned short minorVersion_;
-   unsigned int   timeZone_;
-   unsigned int   timestampAccuracy_;
-   unsigned int   snapLength_;
-   unsigned int   linkLayerType_;
-   void print() { 
+   const static short _size_ = 24;
+   istream& read(ifstream& file ) 
+   {
+      return file.read( (char*) &magicNumber_, _size_ );
+   }
+   void print() const { 
       cout << "magicNumber: " << hex << magicNumber_ << dec << endl;
       cout << "Version: " << majorVersion_ <<"." << minorVersion_ << endl;
       cout << "timeZone: " << timeZone_ << endl;
@@ -26,67 +30,94 @@ class PCAPFileHeader // 24 Bytes
       cout << "SnapLength: " << snapLength_ << endl;
       cout << "linkLayerType: " << linkLayerType_ << endl;
     }
+   unsigned int   magicNumber_;
+   unsigned short majorVersion_;
+   unsigned short minorVersion_;
+   unsigned int   timeZone_;
+   unsigned int   timestampAccuracy_;
+   unsigned int   snapLength_;
+   unsigned int   linkLayerType_;
 };
 
 class PCAPPacketHeader // 16 bytes
 {
    public:
+   const static short _size_ = 16;
    unsigned int seconds_;
    unsigned int microSeconds_;
    unsigned int capturedLength_;
    unsigned int originalLength_;
-   void print() { 
+   void print() const { 
       cout << "timestamp: " << seconds_ << ":" << microSeconds_ 
          << "Length: " << hex << capturedLength_ << ", " << hex << originalLength_ << dec << endl;
     }
 };
 
-
 class OPRABlockHeader // 21 Bytes
 {
    public:
-   unsigned char  stuff_[42];  
+   const static short _size_ = 63;
+   istream& read(ifstream& file );
+   void printTime() const;
    unsigned char  version_; //always 6
-   unsigned char  size_[2];
+   unsigned short blockSize_;
    unsigned char  dataFeedIndicator_;
    unsigned char  retransIndicator_;
    unsigned char  sessionIndicator_;
-   unsigned char  sequenceNumber_[4];
+   unsigned int   sequenceNumber_;
    unsigned char  messageCount_;
-   unsigned char  timeStamp_[8];
-   unsigned char  checkSum_[2];
-   
-   void print() 
-   { 
-      unsigned int seq;
-      memcpy(&seq, sequenceNumber_, 4);
-      seq = __builtin_bswap32(seq);
-//      if ( seq % 100 == 0 )
+   unsigned int   epoch_;
+   unsigned int   nano_;
+   private:
+   unsigned short checkSum_; // not handled
+};
+
+istream& OPRABlockHeader::read(ifstream& file )
+{
+   file.read( buffer, 42 );
+   file.read( (char*) &version_, 1 );  
+   if (version_ != 6 )
+   {
+      cout << "Bad Version Number in Block Header" << endl;
+      exit(1);
+   }
+   file.read( (char*) &blockSize_, 2); blockSize_ = __builtin_bswap16( blockSize_);
+   file.read( (char*) &dataFeedIndicator_, 3 );
+   file.read( (char*) &sequenceNumber_, 4 ); sequenceNumber_ = __builtin_bswap32( sequenceNumber_);
+   file.read( (char*) &messageCount_, 1 );
+   file.read( (char*) &epoch_, 8 ); epoch_ = __builtin_bswap32( epoch_ ); nano_ = __builtin_bswap32( nano_ );
+   return file.read( (char*) &checkSum_, 2 );
+}
+
+void OPRABlockHeader::printTime() const
+{ 
+   time_t time = (unsigned long) epoch_;
+   tm* msgtime = localtime( &time );
+   if ( msgtime != nullptr )
+   {
+      char prev = cout.fill('0');
+      cout << msgtime->tm_hour << ":" << right << setw(2) << msgtime->tm_min << ":" << right << setw(2) << msgtime->tm_sec << "." << setw(3) << (nano_/1000000) << " ";// <<  endl;
+      cout.fill(prev);
+      if (startTime.length() == 0 )
       {
-         unsigned int epoch; memcpy( &epoch, timeStamp_, 4 );  
-         unsigned int nano;memcpy( &nano, &timeStamp_[4], 4 ); nano = __builtin_bswap32(nano);
-         time_t tim = (unsigned long) __builtin_bswap32(epoch);
-         tm* msgtime = localtime(&tim);
-         if ( msgtime != nullptr )
-         {
-            char prev = cout.fill('0');
-//            cout << "sequenceNumber: " << seq << " msgCount: " << (short) messageCount_ << " " << msgtime->tm_hour << ":" << setw(2) << msgtime->tm_min << ":" << setw(2) << msgtime->tm_sec << "." << (nano/1000000) <<  endl;
-            cout << msgtime->tm_hour << ":" << right << setw(2) << msgtime->tm_min << ":" << right << setw(2) << msgtime->tm_sec << "." << setw(3) << (nano/1000000) << " ";// <<  endl;
-            cout.fill(prev);
-         }
+         char temp[100];
+         sprintf( temp, "%02d:%02d:%02d.%03d", msgtime->tm_hour, msgtime->tm_min, msgtime->tm_sec, nano_/1000000);
+         startTime = temp;
       }
    }
-};
+}
+
 class OPRAMessageHeader // 12 Bytes
 {
    public:
+   const static short _size_ = 12;
    unsigned char  participantID_;
    unsigned char  category_;
    unsigned char  type_;
    unsigned char  indicator_;
    unsigned int   transactionID_;
    unsigned int   participantReferenceNumber_;
-   void print() {
+   void print() const {
       cout << "Exchange: '" << participantID_ << "', category: '" << category_ << "', type: '" << type_ << "', indicator: '" << indicator_;
       cout << "', transactionId: " << hex<< transactionID_ << ", referenceNumber: " << participantReferenceNumber_ << dec << endl;
    }
@@ -96,16 +127,28 @@ class OPRALastSale // 31 Bytes
 {
    public:
    OPRAMessageHeader header_;
-   const static short size_ = 31;
+   const static short _size_ = 31;
+   istream& read( ifstream& file )
+   {
+      file.read( symbol_, 10);
+      file.read( (char*) &strike_, 9 ); strike_ = __builtin_bswap32(strike_); volume_ = __builtin_bswap32(volume_);
+      file.read( (char*) &premiumPrice_, 12); premiumPrice_ = __builtin_bswap32( premiumPrice_ );
+      return file;
+   }
+   void print() const 
+   {
+      cout << "Trade" << endl;
+   }
+
    char  symbol_[5];
    char  reserved_;
    char  expiration_[3];
    char  strikeDenominator_;
-   char  strike_[4];
-   char  volume_[4];
-   char  premiumPriceDenominator;
-   char  PremiumPrice[4];
-   char  TradeIdentifier[4];
+   int   strike_;
+   int   volume_;
+   char  premiumPriceDenominator_;
+   int   premiumPrice_;
+   char  tradeIdentifier[4]; // 0x00000000
    char  reserved2_[4];
 };
 
@@ -113,116 +156,201 @@ class OPRAOpenInterest // 18 Bytes
 {
    public:
    OPRAMessageHeader header_;
-   const static int size_ = 18;
+   const static int _size_ = 18;
+   istream& read( ifstream& file )
+   {
+      file.read( symbol_, 10);
+      file.read( (char*) &strike_, 8 ); strike_ = __builtin_bswap32(strike_); volume_ = __builtin_bswap32(volume_);
+      return file;
+   }
+
+   void print() const 
+   {
+      cout << "OpenInterest" << endl;
+   }
    char  symbol_[5];
    char  reserved_;
    char  expiration_[3];
    char  strikeDenominator_;
-   char  strike_[4];
-   char  volume_[4];
+   unsigned int strike_;
+   unsigned int volume_;
 };
 
 class OPRAEODSummary // 60 bytes
 {
    public:
    OPRAMessageHeader header_;
-   const static int size_ = 60;
+   const static int _size_ = 60;
+   istream& read(ifstream& file )
+   {
+      return file.read( symbol_, _size_ );
+   }
+   void print() {}
    char  symbol_[5];
    char  reserved_;
    char  expiration_[3];
    char  strikeDenominator_;
-   char  strike_[4];
-   char  volume_[4];
-   char  openInterestVolume[4];
-   char  premiumPriceDenominator;
-   char  open[4];
-   char  high[4];
-   char  low[4];
-   char  last[4];
-   char  netChange[4];
-   char  underlyingDenominator;
-   char  underlyingPrice[8];
-   char  bidPrice[4];
-   char  offerPrice[4];
+   unsigned int  strike_;
+   unsigned int  volume_;
+   unsigned int  openInterestVolume_;
+   char  premiumPriceDenominator_;
+   unsigned int open_;
+   unsigned int high_;
+   unsigned int low_;
+   unsigned int last_;
+   unsigned int netChange_;
+   char  underlyingDenominator_;
+   long  underlyingPrice_;
+   unsigned int  bidPrice_;
+   unsigned int  offerPrice_;
 };
-
-char buffer[100];
 
 class OPRALongQuote // 31 Bytes
 {
    public:
    OPRAMessageHeader header_;
-   const static int size_ = 31;
+   const static int _size_ = 31;
+   string getInstrument() const;
+   void print() const;
+   ifstream& read(ifstream& file );
+   unsigned int getBidPrice() const { return bidPrice_; }
+   unsigned int getBidSize() const { return bidSize_; }
+   unsigned int getOfferPrice() const { return offerPrice_; }
+   unsigned int getOfferSize() const { return offerSize_; }
+   private:
    char  symbol_[5];
    char  reserved_;
    char  expiration_[3];
    char  strikeDenominator_;
-   char  strike_[4];
+   unsigned int  strike_;
    char  premiumPriceDenominator_;
-   char  bidPrice_[4];
-   char  bidSize_[4];
-   char  offerPrice_[4];
-   char  offerSize_[4];
-
-   string getInstrument() 
-   {
-      unsigned int temp;
-      memcpy(&temp,strike_, 4 );
-      temp = __builtin_bswap32( temp );
-      memcpy(::buffer, symbol_, 5 );
-      buffer[5] = expiration_[0];
-      sprintf( &::buffer[6], "%02u%02u%08u%c", (unsigned short) expiration_[1], (unsigned short) expiration_[2], temp,header_.participantID_);
-      return ::buffer;
-   }
-   void print()
-   {
-      unsigned int bidPrice;  memcpy( &bidPrice, bidPrice_, 4 );
-      unsigned int bidSize; memcpy( &bidSize, bidSize_, 4 );
-      unsigned int offerPrice; memcpy( &offerPrice, offerPrice_, 4 );
-      unsigned int offerSize; memcpy( &offerSize, offerSize_, 4 );
-      cout << getInstrument() <<  " " << strikeDenominator_ << "  "
-         << setw( 4 ) << right << __builtin_bswap32( bidSize ) << right << setw( 9 ) << __builtin_bswap32( bidPrice ) << " " << left << setw( 9 )
-         << __builtin_bswap32( offerPrice ) << setw(5) << __builtin_bswap32( offerSize ) << " " << premiumPriceDenominator_ << endl;
-   }
+   unsigned int  bidPrice_;
+   unsigned int  bidSize_;
+   unsigned int  offerPrice_;
+   unsigned int  offerSize_;
 };
+
+ifstream& OPRALongQuote::read(ifstream& file )
+{
+   file.read( (char*) symbol_, 10 );
+   file.read( (char*) &strike_, 5); //slyly sneak in denominator in same read...
+   strike_ = __builtin_bswap32( strike_ );
+   file.read( (char*) &bidPrice_, 16 );
+   bidPrice_ = __builtin_bswap32( bidPrice_ );
+   bidSize_ = __builtin_bswap32( bidSize_ );
+   offerPrice_ = __builtin_bswap32( offerPrice_ );
+   offerSize_ = __builtin_bswap32( offerSize_ );
+   return file;
+}
+
+string OPRALongQuote::getInstrument() const
+{
+   memcpy(::buffer, symbol_, 5 );
+   buffer[5] = expiration_[0];
+   sprintf( &::buffer[6], "%02u%02u%08u%c", (unsigned short) expiration_[1], (unsigned short) expiration_[2], strike_,header_.participantID_);
+   return ::buffer;
+}
+
+void OPRALongQuote::print() const
+{
+      cout << getInstrument() <<  " " << strikeDenominator_ << "  "
+         << setw( 4 ) << right << bidSize_ << right << setw( 9 ) << bidPrice_ << " " << left << setw( 9 )
+         << offerPrice_ << setw(5) << offerSize_ << " " << premiumPriceDenominator_ << endl;
+}
 
 class OPRAShortQuote // 17 Bytes
 {
    public:
    OPRAMessageHeader header_;
-   const static int size_ = 17;
+   const static int _size_ = 17;
+   string getInstrument() const;
+   void print() const;
+   ifstream& read(ifstream& file );
+   unsigned short getBidPrice() const { return bidPrice_; }
+   unsigned short getBidSize() const { return bidSize_; }
+   unsigned short getOfferPrice() const { return offerPrice_; }
+   unsigned short getOfferSize() const { return offerSize_; }
+   private:
    char  symbol_[4];
+   char  expiration_[3];
+   unsigned short strike_;
+   unsigned short bidPrice_;
+   unsigned short bidSize_;
+   unsigned short offerPrice_;
+   unsigned short offerSize_;
+   /*char  symbol_[4];
    char  expiration_[3];
    char  strike_[2];
    char  bidPrice_[2];
    char  bidSize_[2];
    char  offerPrice_[2];
-   char  offerSize_[2];
-   string getInstrument() 
+   char  offerSize_[2];*/
+};
+
+ifstream& OPRAShortQuote::read(ifstream& file )
+{
+   file.read( (char*) symbol_, 7 );
+   file.read( (char*) &strike_, 10);
+   strike_ = __builtin_bswap16( strike_ );
+   bidPrice_ = __builtin_bswap16( bidPrice_ );
+   bidSize_ = __builtin_bswap16( bidSize_ );
+   offerPrice_ = __builtin_bswap16( offerPrice_ );
+   offerSize_ = __builtin_bswap16( offerSize_ );
+   return file;
+}
+
+
+string OPRAShortQuote::getInstrument() const
+{
+   memcpy(::buffer, symbol_, 4 );
+   ::buffer[4] = ' ';
+   ::buffer[5] = expiration_[0];
+   sprintf( &::buffer[6], "%02u%02u%08u%c", (unsigned short) expiration_[1], (unsigned short) expiration_[2], strike_, header_.participantID_);
+   return ::buffer;
+}
+
+void OPRAShortQuote::print() const
+{
+   cout << getInstrument() << " A"  << "  "
+      << setw( 4 ) << right << bidSize_ << right << setw( 9) << bidPrice_ << " " << left << setw( 9 )
+      << offerPrice_ << setw( 5 ) << offerSize_ << " B" << endl;
+}
+
+class QuoteDetail 
+{
+   public:
+   QuoteDetail( const QuoteDetail& src ) :
+      bid_(src.bid_),
+      offer_(src.offer_),
+      bidSize_(src.bidSize_),
+      offerSize_(src.offerSize_){}
+   QuoteDetail(const OPRAShortQuote& src ) :
+      bid_(src.getBidPrice()),
+      offer_(src.getOfferPrice()),
+      bidSize_(src.getOfferPrice()),
+      offerSize_(src.getOfferSize()) {}
+   QuoteDetail(const OPRALongQuote& src ) :
+      bid_(src.getBidPrice()),
+      offer_(src.getOfferPrice()),
+      bidSize_(src.getOfferPrice()),
+      offerSize_(src.getOfferSize()) {}
+   QuoteDetail() : 
+      bid_(0),
+      offer_(0),
+      bidSize_(0),
+      offerSize_(0)
    {
-      unsigned short temp;
-      memcpy(&temp,strike_, 2 );
-      memcpy(::buffer, symbol_, 4 );
-      temp = __builtin_bswap16( temp );
-      ::buffer[4] = expiration_[0];
-      sprintf( &::buffer[5], "%02u%02u%08u%c", (unsigned short) expiration_[1], (unsigned short) expiration_[2], temp, header_.participantID_);
-      return ::buffer;
    }
-   void print()
-   {
-      unsigned short bidPrice;  memcpy( &bidPrice, bidPrice_, 4 );
-      unsigned short bidSize; memcpy( &bidSize, bidSize_, 4 );
-      unsigned short offerPrice; memcpy( &offerPrice, offerPrice_, 4 );
-      unsigned short offerSize; memcpy( &offerSize, offerSize_, 4 );
-      cout << " " << getInstrument() << " A"  << "  "
-         << setw( 4 ) << right << __builtin_bswap16( bidSize ) << right << setw( 9) << __builtin_bswap16( bidPrice ) << " " << left << setw( 9 )
-         << __builtin_bswap16( offerPrice ) << setw( 5 ) << __builtin_bswap16( offerSize ) << " B" << endl;
-   }
+   unsigned int bid_;
+   unsigned int offer_;
+   unsigned short bidSize_; // it may be possible a size is bigger than 65535?
+   unsigned short offerSize_;
 };
 
 class OPRASingleAppendage //10 bytes
 {
    public:
+   const static short _size_ = 10;
    char exchange_;
    char denominator_;
    char price_[4];
@@ -232,38 +360,44 @@ class OPRASingleAppendage //10 bytes
 class OPRADoubleAppendage // 20 bytes
 {
    public:
-   char bidExchange_;
-   char bidDenominator_;
-   char bidPrice_[4];
-   char bidSize_[4];
-   char offerExchange_;
-   char offerDenominator_;
-   char offerPrice_[4];
-   char offerSize_[4];
+   const static short _size_ = OPRASingleAppendage::_size_ * 2;
+   OPRASingleAppendage bid_;
+   OPRASingleAppendage offer_;
 };
 
-char scratchPad[200];
 
 int main( int argc, char** argv )
 {
    if ( argc < 2 )
    {
-      cout << "Please specify a filename" << endl;
+      cout << "command line: " << endl << "\tOPRAParser filename [minsizechange]" << endl;
       return 1;
    }
    try
    {
+      time_t now = time(0);
+      beginTime = asctime( localtime(&now) );
+
       ifstream inputFile( argv[1], ifstream::in );
+      unsigned int minSize = 0;
+      if ( argc > 2 )
+      {
+         minSize = atoi(argv[2]);
+         minSize > 65535? 65535:minSize;
+      }
       PCAPFileHeader FileHeader;
-      inputFile.read( (char*) &FileHeader, sizeof(FileHeader) );
+      FileHeader.read( inputFile );
       FileHeader.print();
+
       PCAPPacketHeader PacketHeader;
       unsigned long messageCount = 0;
       unsigned long tradeCount = 0;
       unsigned long quoteCount = 0;
       unsigned long bboCount = 0;
-      unsigned long publishedMessageCount = 0;
       unsigned long publishedQuotes = 0;
+      unsigned int SequenceNumber = 0;
+      unsigned int Gaps = 0;
+
       map<char, unsigned int> perTypeCount;
       perTypeCount['H'] = 0;
       perTypeCount['a'] = 0;
@@ -274,34 +408,40 @@ int main( int argc, char** argv )
       perTypeCount['H'] = 0;
       perTypeCount['Y'] = 0;
       perTypeCount['C'] = 0;
-      char buffer[100];
 
-      map<string,unsigned int> longBidMap;
-      map<string,unsigned int> longOfferMap;
-      map<string,unsigned short> shortBidMap;
-      map<string,unsigned short> shortOfferMap;
+      map<string,QuoteDetail> SymMap;
+      OPRABlockHeader BlockHeader;
        
-      while ( inputFile.read( (char*) &PacketHeader, sizeof(PacketHeader)))
+      while ( inputFile.read( (char*) &PacketHeader, PacketHeader._size_ ) )
       {
-//         PacketHeader.print();
          int blockSize = 0;
-         OPRABlockHeader BlockHeader;
-         inputFile.read( (char*) &BlockHeader, sizeof (BlockHeader ) );
-         blockSize += sizeof(BlockHeader);
-//         BlockHeader.print();
-
+         BlockHeader.read( inputFile );
+         blockSize += BlockHeader._size_;
+         unsigned int curSeqNum = BlockHeader.sequenceNumber_;
+         if ( curSeqNum < SequenceNumber )
+         {
+            cout << "Bad Sequence Number, last=" << SequenceNumber << ", current=" << curSeqNum << endl;
+            return 1;
+         }
+         SequenceNumber++;
+         if (curSeqNum != SequenceNumber)
+         {
+//            cout << "Gap Detected, last=" << SequenceNumber - 1  << ", current=" << curSeqNum << endl;
+            Gaps++;
+            SequenceNumber = curSeqNum;
+         }
          for ( int i = 0; i < BlockHeader.messageCount_; i++ )
          {
             OPRAMessageHeader* pHeader = (OPRAMessageHeader*) &scratchPad[0];
-            inputFile.read((char*) pHeader, sizeof(OPRAMessageHeader));
-            blockSize += sizeof(OPRAMessageHeader);
+            inputFile.read( (char*) pHeader, pHeader->_size_ );
+            blockSize += pHeader->_size_;
             messageCount++;
             perTypeCount[pHeader->category_] = perTypeCount[pHeader->category_] + 1;
-//            Header.print();
             switch(pHeader->category_)
             {
                case 'H':
-               {
+               { 
+                  BlockHeader.printTime();
                   if ( pHeader->type_ == 'C')
                      cout << "***START OF DAY" << endl;
                   else if ( pHeader->type_ == 'E')
@@ -322,83 +462,67 @@ int main( int argc, char** argv )
                      cout << "***Disaster Recovery Data Center Activation" << endl;
                   else
                      cout << "***Unknown Type" << endl;
-                  publishedMessageCount++;
                   break;
                }
                case 'a':
                {
                   OPRALastSale* pLastSale = (OPRALastSale*) pHeader;
-                  inputFile.read((char*) pLastSale->symbol_, pLastSale->size_);
-                  blockSize += pLastSale->size_;
+                  inputFile.read((char*) pLastSale->symbol_, pLastSale->_size_);
+                  blockSize += pLastSale->_size_;
                   tradeCount++;
-                  publishedMessageCount++;
                   break;
                }
                case 'd':
                {
                   OPRAOpenInterest* pOpenInterest = (OPRAOpenInterest*) pHeader;
-                  inputFile.read((char*) pOpenInterest->symbol_, pOpenInterest->size_);
-                  blockSize += pOpenInterest->size_;
-                  publishedMessageCount++;
+                  inputFile.read((char*) pOpenInterest->symbol_, pOpenInterest->_size_);
+                  blockSize += pOpenInterest->_size_;
                   break;
-
                }
                case 'f':
                {
                   OPRAEODSummary* pEODSummary = (OPRAEODSummary*) pHeader;
-                  inputFile.read((char*) pEODSummary->symbol_, pEODSummary->size_);
-                  blockSize += pEODSummary->size_;
-                  publishedMessageCount++;
+                  inputFile.read((char*) pEODSummary->symbol_, pEODSummary->_size_);
+                  blockSize += pEODSummary->_size_;
                   break;
                }
                case 'k':   // long quote
                {
                   OPRALongQuote* pQuote = (OPRALongQuote*) pHeader;
-                  inputFile.read((char*) pQuote->symbol_, pQuote->size_);
-                  blockSize += pQuote->size_;
+                  pQuote->read( inputFile );
+                  blockSize += pQuote->_size_;
                   string sym = pQuote->getInstrument();
-                  unsigned int bid;
-                  memcpy(&bid, pQuote->bidPrice_, 4);
-                  unsigned int offer;
-                  memcpy(&offer, pQuote->offerPrice_, 4);
-                  bid = __builtin_bswap32( bid );
-                  offer = __builtin_bswap32( offer );
                   bool publish = false;
-//                  if ( bid > 0 )
+                  auto iter = SymMap.find( sym );
+                  if ( iter != SymMap.end() )
                   {
-                     quoteCount++;
-                     map<string, unsigned int>::iterator it = longBidMap.find(sym);
-                     if (it != longBidMap.end())
+                     if ( 0 < minSize )
                      {
-                        if (it->second != bid)
+                        if ( iter->second.bid_ != pQuote->getBidPrice() ||
+                           abs((int) iter->second.bidSize_ - (int) pQuote->getBidSize()) > minSize ) 
                         {
                            publish = true;
-                           it->second = bid;
+                           iter->second.bid_ = pQuote->getBidPrice();
+                           iter->second.bidSize_ = pQuote->getBidSize();
+                        }
+                        if (iter->second.offer_ != pQuote->getOfferPrice() ||
+                           abs((int) iter->second.offerSize_ - (int) pQuote->getOfferSize()) > minSize ) 
+                        {
+                           publish = true;
+                           iter->second.offer_ = pQuote->getOfferPrice();
+                           iter->second.offerSize_ = pQuote->getOfferSize();
                         }
                      }
                      else
                      {
+                        iter->second = *pQuote;
                         publish = true;
-                        longBidMap[sym] = bid;
                      }
                   }
-//                  if ( offer > 0 )
+                  else // not currently stored.
                   {
-//                     quoteCount++;
-                     map<string, unsigned int>::iterator it = longOfferMap.find(sym);
-                     if (it != longOfferMap.end())
-                     {
-                        if (it->second != offer)
-                        {
-                           publish = true;
-                           it->second = offer;
-                        }
-                     }
-                     else
-                     {
-                        publish = true;
-                        longOfferMap[sym] = offer;
-                     }
+                     publish = true;
+                     SymMap[sym] = *pQuote;
                   }
                   if ( pQuote->header_.indicator_=='C' ||  
                      pQuote->header_.indicator_=='G' || 
@@ -409,8 +533,8 @@ int main( int argc, char** argv )
                   {
                      // single best bid offer;
                      OPRASingleAppendage appendage;
-                     inputFile.read((char*) &appendage, sizeof(appendage));
-                     blockSize += sizeof(appendage);
+                     inputFile.read((char*) &appendage, appendage._size_);
+                     blockSize += appendage._size_;
                      bboCount++;
                      publish = true;
                   }
@@ -418,62 +542,59 @@ int main( int argc, char** argv )
                   {
                      // both bid and offer are BBO.
                      OPRADoubleAppendage appendage;
-                     inputFile.read((char*) &appendage, sizeof(appendage));
-                     blockSize += sizeof(appendage);
+                     inputFile.read((char*) &appendage, appendage._size_);
+                     blockSize += appendage._size_;
                      publish = true;
                      bboCount+=2;
                   }
-                  publishedMessageCount += publish;
-                  publishedQuotes += publish;
-//                  if ( publish )
+                  quoteCount++;
+                  if ( publish )
                   {
-                     BlockHeader.print();
-                     pQuote->print();
+                       publishedQuotes++;
+//                     BlockHeader.printTime();
+//                     pQuote->print();
                   }
                   break;
                }
                case 'q':   // short quote
                {
                   OPRAShortQuote* pQuote = (OPRAShortQuote*) pHeader;
-                  inputFile.read((char*) pQuote->symbol_, pQuote->size_);
-                  blockSize += pQuote->size_;
+                  pQuote->read( inputFile );
+                  blockSize += pQuote->_size_;
                   string sym = pQuote->getInstrument();
-                  unsigned short bid;
-                  memcpy(&bid, pQuote->bidPrice_, 2);
-                  unsigned short offer;
-                  memcpy(&offer, pQuote->offerPrice_, 2);
-                  bid = __builtin_bswap16( bid );
-                  offer = __builtin_bswap16( offer );
-                  quoteCount++;
                   bool publish = false;
-                  map<string, unsigned short>::iterator it = shortBidMap.find(sym);
-                  if (it != shortBidMap.end())
+                  auto iter = SymMap.find(sym);
+                  if ( iter != SymMap.end() )
                   {
-                     if (it->second != bid)
+                     if ( 0 < minSize )
                      {
+                        if ( iter->second.bid_ != pQuote->getBidPrice() ||
+                           abs((int) iter->second.bidSize_ - (int) pQuote->getBidSize()) > minSize ) 
+                        {
+                           publish = true;
+                           iter->second.bid_ = pQuote->getBidPrice();
+                           iter->second.bidSize_ = pQuote->getBidSize();
+                        }
+                        if (iter->second.offer_ != pQuote->getOfferPrice() ||
+                           abs((int) iter->second.offerSize_ - (int) pQuote->getOfferSize()) > minSize ) 
+                        {
+                           publish = true;
+                           iter->second.offer_ = pQuote->getOfferPrice();
+                           iter->second.offerSize_ = pQuote->getOfferSize();
+                        }
+                     }
+                     else
+                     {
+                        iter->second = *pQuote;                        
                         publish = true;
-                        it->second = bid;
                      }
                   }
-                  else
+                  else // not currently in dictionary.
                   {
                      publish = true;
-                     shortBidMap[sym] = bid;
+                     SymMap[sym] = *pQuote;
                   }
-                  it = shortOfferMap.find(sym);
-                  if (it != shortOfferMap.end())
-                  {
-                     if (it->second != offer)
-                     {
-                        publish = true;
-                        it->second = offer;
-                     }
-                  }
-                  else
-                  {
-                     publish = true;
-                     shortOfferMap[sym] = offer;
-                  }
+
                   if ( pQuote->header_.indicator_=='C' ||  
                      pQuote->header_.indicator_=='G' || 
                      pQuote->header_.indicator_=='K' ||
@@ -497,12 +618,12 @@ int main( int argc, char** argv )
                      publish = true;
                      bboCount += 2;
                   }
-                  publishedMessageCount += publish;
-                  publishedQuotes += publish;
-//                  if ( publish )
+                  quoteCount++;
+                  if ( publish )
                   {
-                     BlockHeader.print();
-                     pQuote->print();
+                     publishedQuotes++;
+//                     BlockHeader.print();
+//                     pQuote->print();
                   }
                   break;
                }
@@ -521,14 +642,22 @@ int main( int argc, char** argv )
             inputFile.read( buffer, PacketHeader.capturedLength_ - PacketHeader.originalLength_ );
          }
       }
-      cout << "longBid: " << longBidMap.size() << ", longOffer: " << longOfferMap.size() << ", shortbid: " << shortBidMap.size() << ", shortoffer: " << shortOfferMap.size() << endl;
+      now = time(0);
+
+      cout << "Start Time:\t" << beginTime;
+      cout << "Finish Time:\t" << asctime( localtime(&now) ); 
+      cout << "File startTime: " << startTime << ", endTime: ";
+      BlockHeader.printTime();
+      cout << endl;
+      cout << "Symbol Count: " << SymMap.size() << endl;
       double reduction = (double) publishedQuotes/(double) quoteCount;
       cout << "messages:\t" << messageCount << endl;
+      cout << "Gaps:\t\t" << Gaps << endl;
       cout << "trades:\t\t" << tradeCount << endl;
       cout << "quotes:\t\t" << quoteCount << endl;
       cout << "BBO Count:\t" << bboCount << endl;
-      cout << "pub Messages:\t" << publishedMessageCount << endl;
       cout << "pub Quotes:\t" << publishedQuotes << endl;
+      cout << "Conflating size only quotes minSize: " << minSize << endl;
       cout << "quote pub %:\t" << reduction << endl;
 
       for (auto it = perTypeCount.begin(); it != perTypeCount.end(); it++ )
@@ -541,7 +670,6 @@ int main( int argc, char** argv )
       cerr << e.what() << '\n';
       return 1;
    }
-
-   
+  
    return 0;
 }
